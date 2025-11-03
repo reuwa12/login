@@ -2,14 +2,19 @@ package com.example.login.service;
 
 import com.example.login.dto.AuthRequest;
 import com.example.login.dto.AuthResponse;
+import com.example.login.dto.RefreshTokenRequest;
 import com.example.login.dto.SignupRequest;
+import com.example.login.entity.AuthProvider;
 import com.example.login.entity.User;
 import com.example.login.repository.UserRepository;
 import com.example.login.security.JwtService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
@@ -22,69 +27,89 @@ public class AuthService {
     private final AuthenticationManager authenticationManager;
     private final JwtService jwtService;
 
-    // 회원가입
+    //회원가입 기능
+
     public AuthResponse signup(SignupRequest signupRequest) {
-        // 닉네임 중복 확인
-        if(userRepository.existsByNickname(signupRequest.getNickname())) {
-            throw new UserAlreadyExistsException("nickname already exists");
-        }
-        // 이메일 중복 확인
-        if(userRepository.existsByEmail(signupRequest.getEmail())) {
-            throw new UserAlreadyExistsException("Email already exists");
+        // 이메일 중복 체크
+        if (userRepository.existsByEmail(signupRequest.getEmail())) {
+            throw new IllegalArgumentException("Email already exists");
         }
 
+        // 닉네임 중복 체크
+        if (userRepository.existsByNickname(signupRequest.getNickname())) {
+            throw new IllegalArgumentException("Nickname already exists");
+        }
+
+        // 새 사용자 생성
         User user = User.builder()
                 .nickname(signupRequest.getNickname())
+                .username(signupRequest.getEmail()) // 스프링 시큐리티의 username 필드
                 .email(signupRequest.getEmail())
                 .password(passwordEncoder.encode(signupRequest.getPassword()))
-                .birthDate(signupRequest.getBirthDate())
-                .onboardingCompleted(false)
                 .provider(AuthProvider.LOCAL)
                 .build();
 
-        // DB에 저장하고 저장된 객체 반환(DB ID 포함)
-        user = userRepository.save(user);
+        // DB 저장
+        User savedUser = userRepository.save(user);
 
-        // JWT 발급 (회원가입시 자동 로그인)
-        String jwtToken = jwtService.generateToken(user);
-        String refreshToken = jwtService.generateRefreshToken(user);
+        // JWT 토큰 발급
+        String accessToken = jwtService.generateToken(savedUser);
+        String refreshToken = jwtService.generateRefreshToken(savedUser);
 
-        UserDetailResponseDto userDto = UserDetailResponseDto.fromEntity(user);
-
-        //AuthResponse 반환
         return AuthResponse.builder()
-                .accessToken(jwtToken)
+                .accessToken(accessToken)
                 .refreshToken(refreshToken)
-                .user(userDto)     //화면 표시용
                 .build();
     }
 
-    // 로그인
+    // 로그인 기능
     public AuthResponse login(AuthRequest authRequest) {
         try {
-            // 이메일로 로그인 시도
-            Authentication authentication =authenticationManager.authenticate(
+            // AuthenticationManager를 사용하여 로그인 인증 수행
+            Authentication authentication = authenticationManager.authenticate(
                     new UsernamePasswordAuthenticationToken(
                             authRequest.getEmail(),
                             authRequest.getPassword()
                     )
             );
 
-            // 인증 성공 후 UserDetailsService 에서 반환된 User 객체 추출
-            User user = (User) authentication.getPrincipal();
+            // 인증된 사용자 정보 가져오기
+            UserDetails userDetails = (UserDetails) authentication.getPrincipal();
 
-            // 로그인 성공시 토큰 발급
-            String jwtToken = jwtService.generateToken(user);
-            String refreshToken = jwtService.generateRefreshToken(user);
+            // Access, Refresh 토큰 발급
+            String accessToken = jwtService.generateToken(userDetails);
+            String refreshToken = jwtService.generateRefreshToken(userDetails);
 
             return AuthResponse.builder()
-                    .accessToken(jwtToken)
+                    .accessToken(accessToken)
                     .refreshToken(refreshToken)
-                    .user(UserDetailResponseDto.fromEntity(user))
                     .build();
 
         } catch (AuthenticationException e) {
-            throw new AuthenticationException("Invalid email or password");
+            throw new BadCredentialsException("Invalid email or password", e);
         }
+    }
+
+    //리프레시 토큰으로 Access Token 재발급
+
+    public AuthResponse refresh(RefreshTokenRequest request) {
+        String refreshToken = request.getRefreshToken();
+        String email = jwtService.extractUser(refreshToken);
+
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new BadCredentialsException("Invalid refresh token"));
+
+        if (!jwtService.isTokenValid(refreshToken, user)) {
+            throw new BadCredentialsException("Invalid refresh token");
+        }
+
+        // 새 토큰 발급
+        String newAccessToken = jwtService.generateToken(user);
+        String newRefreshToken = jwtService.generateRefreshToken(user);
+
+        return AuthResponse.builder()
+                .accessToken(newAccessToken)
+                .refreshToken(newRefreshToken)
+                .build();
     }
 }
