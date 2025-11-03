@@ -56,6 +56,10 @@ public class AuthService {
         String accessToken = jwtService.generateToken(savedUser);
         String refreshToken = jwtService.generateRefreshToken(savedUser);
 
+        // 발급한 리프레시 토큰을 엔티티에 저장해 다음 요청에서 검증할 수 있도록 합니다.
+        savedUser.setRefreshToken(refreshToken);
+        userRepository.save(savedUser);
+
         return AuthResponse.builder()
                 .accessToken(accessToken)
                 .refreshToken(refreshToken)
@@ -80,6 +84,12 @@ public class AuthService {
             String accessToken = jwtService.generateToken(userDetails);
             String refreshToken = jwtService.generateRefreshToken(userDetails);
 
+            // 인증된 사용자의 엔티티를 조회하여 새 리프레시 토큰을 저장합니다.
+            User user = userRepository.findByEmail(userDetails.getUsername())
+                    .orElseThrow(() -> new BadCredentialsException("Invalid email or password"));
+            user.setRefreshToken(refreshToken);
+            userRepository.save(user);
+
             return AuthResponse.builder()
                     .accessToken(accessToken)
                     .refreshToken(refreshToken)
@@ -103,9 +113,18 @@ public class AuthService {
             throw new BadCredentialsException("Invalid refresh token");
         }
 
+        // 데이터베이스에 저장된 리프레시 토큰과 일치하는지도 확인합니다.
+        if (user.getRefreshToken() == null || !user.getRefreshToken().equals(refreshToken)) {
+            throw new BadCredentialsException("Invalid refresh token");
+        }
+
         // 새 토큰 발급
         String newAccessToken = jwtService.generateToken(user);
         String newRefreshToken = jwtService.generateRefreshToken(user);
+
+        // 재발급된 리프레시 토큰을 저장하여 이전 토큰을 무효화합니다.
+        user.setRefreshToken(newRefreshToken);
+        userRepository.save(user);
 
         return AuthResponse.builder()
                 .accessToken(newAccessToken)
